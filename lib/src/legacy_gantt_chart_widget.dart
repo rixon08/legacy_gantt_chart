@@ -169,6 +169,13 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// A callback function invoked when a batch of tasks are updated.
   final Function(List<(LegacyGanttTask, DateTime, DateTime)>)? onBulkTaskUpdate;
 
+  /// A callback invoked when the visible time range changes due to user panning/scrolling.
+  ///
+  /// This is important when you pass [gridMin]/[gridMax] from external state (controlled mode).
+  /// In that case, update your external state in this callback; otherwise the next rebuild
+  /// will restore the old range and the chart will appear to not scroll horizontally.
+  final Function(DateTime start, DateTime end)? onVisibleRangeChanged;
+
   /// Enables moving tasks vertically between rows while dragging.
   ///
   /// When enabled, horizontal dragging continues to adjust the task dates, while
@@ -415,6 +422,7 @@ class LegacyGanttChartWidget extends StatefulWidget {
     this.emptyStateBuilder,
     this.showEmptyRows = false,
     this.onBulkTaskUpdate,
+    this.onVisibleRangeChanged,
     this.enableVerticalTaskDrag = false,
     this.height,
     this.loadingIndicatorType = GanttLoadingIndicatorType.circular,
@@ -687,6 +695,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
             rollUpMilestones: widget.rollUpMilestones,
             showSlack: widget.showSlack,
             onBulkTaskUpdate: widget.onBulkTaskUpdate,
+            onVisibleRangeChanged: widget.onVisibleRangeChanged,
             onSelectionChanged: (ids) {
               if (widget.controller != null) {
                 widget.controller!.setSelectedTaskIds(ids);
