@@ -1934,6 +1934,11 @@ class LegacyGanttViewModel extends ChangeNotifier {
             onHorizontalPanUpdate(details);
             return;
           }
+        } else if (prefersHorizontal) {
+          // Allow horizontal timeline panning even when starting on empty space.
+          _panType = PanType.horizontal;
+          onHorizontalPanUpdate(details);
+          return;
         }
       }
 
