@@ -1707,7 +1707,11 @@ class LegacyGanttViewModel extends ChangeNotifier {
 
   void onPointerEvent(PointerEvent event) {
     if (event is PointerDownEvent) {
-      if (event.buttons & kPrimaryMouseButton != 0) {
+      // On touch/stylus (mobile/tablet), `buttons` can be 0 so gating horizontal
+      // interactions on `kPrimaryMouseButton` breaks panning.
+      if (event.kind == PointerDeviceKind.touch || event.kind == PointerDeviceKind.stylus) {
+        _isPrimaryButtonDown = true;
+      } else if (event.buttons & kPrimaryMouseButton != 0) {
         _isPrimaryButtonDown = true;
       }
     } else if (event is PointerUpEvent || event is PointerCancelEvent) {
