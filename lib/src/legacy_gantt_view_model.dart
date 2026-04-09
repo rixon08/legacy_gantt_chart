@@ -21,7 +21,7 @@ import 'models/dependency_drag_status.dart';
 
 enum DragMode { none, move, resizeStart, resizeEnd }
 
-enum PanType { none, vertical, horizontal, selection, draw, dependency }
+enum PanType { none, vertical, horizontal, diagonal, selection, draw, dependency }
 
 enum TaskPart { body, startHandle, endHandle }
 
@@ -1858,6 +1858,14 @@ class LegacyGanttViewModel extends ChangeNotifier {
   void onPanUpdate(DragUpdateDetails details) {
     if (_panType == PanType.horizontal) {
       onHorizontalPanUpdate(details);
+    } else if (_panType == PanType.diagonal) {
+      // Free panning: allow both axes in a single drag gesture.
+      if (details.delta.dx != 0) {
+        _handleHorizontalScroll(-details.delta.dx);
+      }
+      if (details.delta.dy != 0) {
+        _handleVerticalScrollDelta(details.delta.dy);
+      }
     } else if (_panType == PanType.selection) {
       if (_selectionRect != null) {
         final currentY = max(0.0, details.localPosition.dy - timeAxisHeight);
@@ -1934,10 +1942,15 @@ class LegacyGanttViewModel extends ChangeNotifier {
             onHorizontalPanUpdate(details);
             return;
           }
-        } else if (prefersHorizontal) {
-          // Allow horizontal timeline panning even when starting on empty space.
-          _panType = PanType.horizontal;
-          onHorizontalPanUpdate(details);
+        } else {
+          // Drag started on empty space: allow diagonal panning (both axes).
+          _panType = PanType.diagonal;
+          if (details.delta.dx != 0) {
+            _handleHorizontalScroll(-details.delta.dx);
+          }
+          if (details.delta.dy != 0) {
+            _handleVerticalScrollDelta(details.delta.dy);
+          }
           return;
         }
       }
@@ -2411,6 +2424,24 @@ class LegacyGanttViewModel extends ChangeNotifier {
     if (_translateY == clampedTranslateY) {
       return;
     }
+
+    setTranslateY(clampedTranslateY);
+    _isScrollingInternally = true;
+    scrollController?.jumpTo(-clampedTranslateY);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _isScrollingInternally = false);
+  }
+
+  void _handleVerticalScrollDelta(double deltaDy) {
+    // Dragging down should move the content down (translateY increases toward 0),
+    // dragging up should move it up (translateY decreases).
+    final proposedTranslateY = _translateY + deltaDy;
+    final double contentHeight =
+        visibleRows.fold<double>(0.0, (prev, row) => prev + rowHeight * (rowMaxStackDepth[row.id] ?? 1));
+    final double availableHeightForBars = _height - timeAxisHeight;
+    final double maxNegativeTranslateY = max(0.0, contentHeight - availableHeightForBars);
+    final clampedTranslateY = min(0.0, max(-maxNegativeTranslateY, proposedTranslateY));
+
+    if (_translateY == clampedTranslateY) return;
 
     setTranslateY(clampedTranslateY);
     _isScrollingInternally = true;
