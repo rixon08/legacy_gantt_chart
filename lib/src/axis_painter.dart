@@ -6,6 +6,25 @@ import 'dart:ui' as ui;
 
 import 'models/legacy_gantt_theme.dart';
 
+/// Controls the timeline "major" segmentation for axis labels and boundary lines.
+enum TimelineViewMode {
+  /// Uses adaptive tick steps based on visible duration.
+  auto,
+  day,
+  week,
+  month,
+  year,
+}
+
+/// Controls where timeline labels are anchored.
+enum TimelineLabelPlacement {
+  /// Label is centered between two consecutive boundaries.
+  betweenBoundaries,
+
+  /// Label is anchored on the boundary line itself.
+  onBoundary,
+}
+
 /// A [CustomPainter] that draws the time axis and vertical grid lines for the Gantt chart.
 ///
 /// This painter is versatile and can be used to draw both the main background grid
@@ -57,6 +76,18 @@ class AxisPainter extends CustomPainter {
   /// If false, labels are drawn just above the [y] line.
   final bool verticallyCenterLabels;
 
+  /// Controls major boundaries (day/week/month/year) and label placement when not [TimelineViewMode.auto].
+  final TimelineViewMode timelineViewMode;
+
+  /// Label placement strategy when [timelineViewMode] is not [TimelineViewMode.auto].
+  final TimelineLabelPlacement labelPlacement;
+
+  /// Stroke width for (auto) grid lines.
+  final double gridLineStrokeWidth;
+
+  /// Stroke width for major boundary lines in non-auto modes.
+  final double majorGridLineStrokeWidth;
+
   AxisPainter({
     required this.x,
     required this.y,
@@ -71,13 +102,20 @@ class AxisPainter extends CustomPainter {
     this.weekendDays,
     this.showGridLines = true,
     this.verticallyCenterLabels = false,
-  });
+    this.timelineViewMode = TimelineViewMode.auto,
+    TimelineLabelPlacement? labelPlacement,
+    this.gridLineStrokeWidth = 1.0,
+    this.majorGridLineStrokeWidth = 2.0,
+  }) : labelPlacement = labelPlacement ??
+            (timelineViewMode == TimelineViewMode.week
+                ? TimelineLabelPlacement.onBoundary
+                : TimelineLabelPlacement.betweenBoundaries);
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = theme.gridColor
-      ..strokeWidth = 1.0;
+      ..strokeWidth = gridLineStrokeWidth;
 
     if (domain.isEmpty || visibleDomain.isEmpty) return;
 
@@ -94,6 +132,64 @@ class AxisPainter extends CustomPainter {
         }
         currentDay = currentDay.add(const Duration(days: 1));
       }
+    }
+
+    // Non-auto: draw major boundaries and place labels either between boundaries or on them.
+    if (timelineViewMode != TimelineViewMode.auto) {
+      final majorPaint = Paint()
+        ..color = theme.gridColor
+        ..strokeWidth = majorGridLineStrokeWidth;
+
+      final boundaries = _generateMajorBoundaries(
+        start: domain.first,
+        end: domain.last,
+        mode: timelineViewMode,
+      ).toList();
+
+      if (boundaries.length < 2) return;
+
+      double lastLabelRightEdge = double.negativeInfinity;
+
+      for (int i = 0; i < boundaries.length; i++) {
+        final boundaryTime = boundaries[i];
+        final boundaryX = scale(boundaryTime);
+
+        if (showGridLines) {
+          canvas.drawLine(
+            Offset(boundaryX, y),
+            Offset(boundaryX, y + height),
+            majorPaint,
+          );
+        }
+
+        double? labelCenterX;
+        if (labelPlacement == TimelineLabelPlacement.onBoundary) {
+          labelCenterX = boundaryX;
+        } else {
+          if (i == boundaries.length - 1) {
+            labelCenterX = null;
+          } else {
+            final nextX = scale(boundaries[i + 1]);
+            labelCenterX = (boundaryX + nextX) / 2;
+          }
+        }
+
+        if (labelCenterX == null) continue;
+
+        final approxInterval = _approxIntervalForMode(timelineViewMode);
+        final label = timelineAxisLabelBuilder != null
+            ? timelineAxisLabelBuilder!(boundaryTime, approxInterval)
+            : _defaultMajorLabel(boundaryTime, timelineViewMode);
+
+        lastLabelRightEdge = _paintLabelAtX(
+          canvas,
+          label: label,
+          centerX: labelCenterX,
+          lastLabelRightEdge: lastLabelRightEdge,
+        );
+      }
+
+      return;
     }
 
     final visibleDuration = visibleDomain.last.difference(visibleDomain.first);
@@ -213,11 +309,132 @@ class AxisPainter extends CustomPainter {
       height != oldDelegate.height ||
       showGridLines != oldDelegate.showGridLines ||
       verticallyCenterLabels != oldDelegate.verticallyCenterLabels ||
+      timelineViewMode != oldDelegate.timelineViewMode ||
+      labelPlacement != oldDelegate.labelPlacement ||
+      gridLineStrokeWidth != oldDelegate.gridLineStrokeWidth ||
+      majorGridLineStrokeWidth != oldDelegate.majorGridLineStrokeWidth ||
       !listEquals(domain, oldDelegate.domain) ||
       (visibleDomain.isNotEmpty && oldDelegate.visibleDomain.isNotEmpty
           ? visibleDomain.first != oldDelegate.visibleDomain.first ||
               visibleDomain.last != oldDelegate.visibleDomain.last
           : listEquals(visibleDomain, oldDelegate.visibleDomain));
+
+  double _paintLabelAtX(
+    Canvas canvas, {
+    required String label,
+    required double centerX,
+    required double lastLabelRightEdge,
+  }) {
+    final textStyle = theme.axisTextStyle;
+    if (textStyle.color == Colors.transparent) return lastLabelRightEdge;
+
+    final textSpan = TextSpan(text: label, style: textStyle);
+    final textPainter = TextPainter(
+      text: textSpan,
+      textAlign: TextAlign.center,
+      textDirection: ui.TextDirection.ltr,
+    );
+    textPainter.layout();
+
+    final labelWidth = textPainter.width;
+    final labelX = centerX - (labelWidth / 2);
+
+    // Collision avoidance with padding.
+    if (labelX < lastLabelRightEdge + 8.0) return lastLabelRightEdge;
+
+    final double textY =
+        verticallyCenterLabels ? (y + (height - textPainter.height) / 2) : (y - textPainter.height);
+    textPainter.paint(canvas, Offset(labelX, textY));
+    return labelX + labelWidth;
+  }
+
+  Duration _approxIntervalForMode(TimelineViewMode mode) {
+    switch (mode) {
+      case TimelineViewMode.day:
+        return const Duration(days: 1);
+      case TimelineViewMode.week:
+        return const Duration(days: 7);
+      case TimelineViewMode.month:
+        return const Duration(days: 30);
+      case TimelineViewMode.year:
+        return const Duration(days: 365);
+      case TimelineViewMode.auto:
+        return const Duration(days: 1);
+    }
+  }
+
+  String _defaultMajorLabel(DateTime dt, TimelineViewMode mode) {
+    switch (mode) {
+      case TimelineViewMode.day:
+        return DateFormat('EEE d').format(dt);
+      case TimelineViewMode.week:
+        return 'Week ${_weekNumber(dt)}';
+      case TimelineViewMode.month:
+        return DateFormat('MMM yyyy').format(dt);
+      case TimelineViewMode.year:
+        return DateFormat('yyyy').format(dt);
+      case TimelineViewMode.auto:
+        return DateFormat('d MMM').format(dt);
+    }
+  }
+
+  Iterable<DateTime> _generateMajorBoundaries({
+    required DateTime start,
+    required DateTime end,
+    required TimelineViewMode mode,
+  }) sync* {
+    if (end.isBefore(start)) return;
+
+    DateTime current;
+    switch (mode) {
+      case TimelineViewMode.day:
+        current = DateTime(start.year, start.month, start.day);
+        break;
+      case TimelineViewMode.week:
+        final dayStart = DateTime(start.year, start.month, start.day);
+        final deltaToMonday = (dayStart.weekday - DateTime.monday) % 7;
+        current = dayStart.subtract(Duration(days: deltaToMonday));
+        break;
+      case TimelineViewMode.month:
+        current = DateTime(start.year, start.month, 1);
+        break;
+      case TimelineViewMode.year:
+        current = DateTime(start.year, 1, 1);
+        break;
+      case TimelineViewMode.auto:
+        current = start;
+        break;
+    }
+
+    // Generate boundaries that cover [start, end] plus one extra step.
+    while (current.isBefore(end) || current.isAtSameMomentAs(end)) {
+      yield current;
+      current = _addMajorStep(current, mode);
+      if (mode == TimelineViewMode.auto) break;
+    }
+    if (mode != TimelineViewMode.auto) {
+      yield _addMajorStep(current, mode);
+    }
+  }
+
+  DateTime _addMajorStep(DateTime dt, TimelineViewMode mode) {
+    switch (mode) {
+      case TimelineViewMode.day:
+        return dt.add(const Duration(days: 1));
+      case TimelineViewMode.week:
+        return dt.add(const Duration(days: 7));
+      case TimelineViewMode.month:
+        final y = dt.year;
+        final m = dt.month;
+        final nextMonth = m == 12 ? 1 : (m + 1);
+        final nextYear = m == 12 ? (y + 1) : y;
+        return DateTime(nextYear, nextMonth, 1);
+      case TimelineViewMode.year:
+        return DateTime(dt.year + 1, 1, 1);
+      case TimelineViewMode.auto:
+        return dt;
+    }
+  }
 
   DateTime _roundDownTo(DateTime dt, Duration delta) {
     if (delta.inDays >= 7) {}

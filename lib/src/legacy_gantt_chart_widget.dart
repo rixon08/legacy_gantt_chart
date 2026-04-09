@@ -244,6 +244,28 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// ```
   final String Function(DateTime, Duration)? timelineAxisLabelBuilder;
 
+  /// Controls how the timeline axis/grid should be segmented (day/week/month/year).
+  ///
+  /// - If [TimelineViewMode.auto], the chart uses an adaptive tick-step algorithm.
+  /// - Otherwise, it draws major boundary lines for the selected mode.
+  ///
+  /// Note: If you provide [timelineAxisHeaderBuilder], you can (and should) use the
+  /// same mode inside your custom header painter for consistent boundaries/label centering.
+  final TimelineViewMode timelineViewMode;
+
+  /// Controls where labels are placed relative to major boundaries.
+  ///
+  /// Defaults:
+  /// - week: on boundary
+  /// - day/month/year: between boundaries
+  final TimelineLabelPlacement? timelineLabelPlacement;
+
+  /// Stroke width for grid lines in auto mode.
+  final double gridLineStrokeWidth;
+
+  /// Stroke width for major boundary lines in non-auto view modes.
+  final double majorGridLineStrokeWidth;
+
   /// A builder function to create a completely custom widget for the timeline header.
   ///
   /// If this is provided, the default timeline header painting is skipped, and this
@@ -419,6 +441,10 @@ class LegacyGanttChartWidget extends StatefulWidget {
     this.resizeHandleWidth = 10.0,
     this.timelineAxisLabelBuilder,
     this.timelineAxisHeaderBuilder,
+    this.timelineViewMode = TimelineViewMode.auto,
+    this.timelineLabelPlacement,
+    this.gridLineStrokeWidth = 1.0,
+    this.majorGridLineStrokeWidth = 2.0,
     this.emptyStateBuilder,
     this.showEmptyRows = false,
     this.onBulkTaskUpdate,
@@ -811,6 +837,10 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                                     weekendColor: effectiveTheme.weekendColor,
                                                     weekendDays:
                                                         widget.workCalendar?.weekendDays.toList() ?? widget.weekendDays,
+                                                    timelineViewMode: widget.timelineViewMode,
+                                                    labelPlacement: widget.timelineLabelPlacement,
+                                                    gridLineStrokeWidth: widget.gridLineStrokeWidth,
+                                                    majorGridLineStrokeWidth: widget.majorGridLineStrokeWidth,
                                                   ),
                                                 ),
                                               ),
@@ -936,6 +966,10 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                                             widget.weekendDays,
                                                         showGridLines: false,
                                                         verticallyCenterLabels: true,
+                                                        timelineViewMode: widget.timelineViewMode,
+                                                        labelPlacement: widget.timelineLabelPlacement,
+                                                        gridLineStrokeWidth: widget.gridLineStrokeWidth,
+                                                        majorGridLineStrokeWidth: widget.majorGridLineStrokeWidth,
                                                       ),
                                                     ),
                                                   ),
