@@ -745,21 +745,15 @@ class BarsCollectionPainter extends CustomPainter {
 
     if (x < 0 || x > size.width) return;
 
-    // Match the now-line length to the rendered rows content height (not the full viewport),
-    // and clamp it to the currently visible content (accounting for translateY).
-    final double contentHeight = visibleRows.fold<double>(0.0, (sum, row) {
-      final int stackDepth = rowMaxStackDepth[row.id] ?? 1;
-      return sum + (rowHeight * stackDepth);
-    });
-    if (contentHeight <= 0) return;
-
     // After canvas.translate(0, translateY), the visible content window is:
     // [visibleTop, visibleBottom] in *content* coordinates.
     final double visibleTop = -translateY;
     final double visibleBottom = -translateY + size.height;
 
-    final double startY = max(0.0, visibleTop);
-    final double endY = min(contentHeight, visibleBottom);
+    // Always draw the now-line full height of the viewport, even when the content
+    // (rows) is shorter than the available paint area.
+    final double startY = visibleTop;
+    final double endY = visibleBottom;
     if (endY <= startY) return;
 
     final paint = Paint()
