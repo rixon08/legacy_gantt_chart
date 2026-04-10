@@ -745,12 +745,21 @@ class BarsCollectionPainter extends CustomPainter {
 
     if (x < 0 || x > size.width) return;
 
+    // Match the now-line length to the rendered rows content height (not the full viewport),
+    // so it doesn't extend into empty space when there are fewer rows than available height.
+    final double contentHeight = visibleRows.fold<double>(0.0, (sum, row) {
+      final int stackDepth = rowMaxStackDepth[row.id] ?? 1;
+      return sum + (rowHeight * stackDepth);
+    });
+    final double lineHeight = min(size.height, contentHeight);
+    if (lineHeight <= 0) return;
+
     final paint = Paint()
       ..color = theme.nowLineColor
       ..strokeWidth = 2.0
       ..style = PaintingStyle.stroke;
 
-    canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    canvas.drawLine(Offset(x, 0), Offset(x, lineHeight), paint);
 
     final path = Path();
     const double markerSize = 6.0;
