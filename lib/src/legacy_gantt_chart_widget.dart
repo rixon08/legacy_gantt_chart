@@ -46,8 +46,11 @@ enum GanttLoadingIndicatorPosition {
 /// **Horizontal zoom:** Use [horizontalZoomFactor] (≥ 1.0) for more timeline detail. When it is
 /// greater than 1, the chart scrolls horizontally inside the widget. Prefer this over wrapping
 /// the chart in another horizontal [SingleChildScrollView]. With [allowHorizontalZoomGestures],
-/// use Ctrl+scroll or Cmd+scroll (vertical wheel) or a trackpad pinch to zoom; listen with
-/// [onHorizontalZoomFactorChanged] to sync parent state.
+/// use a trackpad pinch, Ctrl/Cmd/**Alt** + vertical scroll, or (if
+/// [horizontalZoomOnVerticalWheel] is true) plain vertical wheel/trackpad pan. Listen with
+/// [onHorizontalZoomFactorChanged] to sync parent state (`horizontalZoomFactor: _zoom` in the
+/// parent). Set [horizontalZoomOnVerticalWheel] to false when a parent [ScrollView] should
+/// consume vertical scrolling.
 class LegacyGanttChartWidget extends StatefulWidget {
   /// The list of [LegacyGanttTask] objects to display on the chart.
   /// This is ignored if a [controller] or [tasksFuture] is provided.
@@ -383,6 +386,12 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// adjust zoom within [horizontalZoomMin]–[horizontalZoomMax].
   final bool allowHorizontalZoomGestures;
 
+  /// When true (default), a **vertical** scroll wheel or trackpad pan (without
+  /// holding Ctrl/Cmd/Alt) also zooms the timeline. Disable this if the chart
+  /// sits inside a vertical [ScrollView] and the parent should keep the wheel,
+  /// or keep it off and use Ctrl/Cmd/Alt + scroll instead.
+  final bool horizontalZoomOnVerticalWheel;
+
   /// Notified when a built-in gesture changes the zoom factor. You can update
   /// parent state here to keep [horizontalZoomFactor] in sync (controlled mode).
   final ValueChanged<double>? onHorizontalZoomFactorChanged;
@@ -497,6 +506,7 @@ class LegacyGanttChartWidget extends StatefulWidget {
     this.horizontalZoomMin = 1.0,
     this.horizontalZoomMax = 8.0,
     this.allowHorizontalZoomGestures = true,
+    this.horizontalZoomOnVerticalWheel = true,
     this.onHorizontalZoomFactorChanged,
     this.focusedTaskResizeHandleBuilder,
     this.focusedTaskResizeHandleWidth = 24.0,
@@ -807,7 +817,8 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
             taskBarBuilder: widget.taskBarBuilder,
             resizeTooltipDateFormat: widget.resizeTooltipDateFormat,
             scrollController: widget.scrollController,
-            ganttHorizontalScrollController: widget.horizontalScrollController,
+            ganttHorizontalScrollController:
+                widget.horizontalScrollController ?? _ownedHorizontalScrollController,
             onRowRequestVisible: widget.onRowRequestVisible,
             initialFocusedTaskId: widget.focusedTaskId,
             onFocusChange: widget.onFocusChange,
@@ -886,6 +897,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                         children: [
                           Expanded(
                             child: Listener(
+                              behavior: HitTestBehavior.translucent,
                               onPointerDown: vm.onPointerEvent,
                               onPointerUp: vm.onPointerEvent,
                               onPointerCancel: vm.onPointerEvent,
@@ -908,13 +920,21 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                   : null,
                               onPointerSignal: (event) {
                                 if (event is PointerScrollEvent) {
-                                  final keyboard = HardwareKeyboard.instance;
-                                  final zoomModifier = widget.allowHorizontalZoomGestures &&
-                                      (keyboard.isControlPressed || keyboard.isMetaPressed);
-                                  if (zoomModifier && event.scrollDelta.dy != 0) {
-                                    final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
-                                    _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
-                                    return;
+                                  if (widget.allowHorizontalZoomGestures) {
+                                    final keyboard = HardwareKeyboard.instance;
+                                    final zoomModifier = keyboard.isControlPressed ||
+                                        keyboard.isMetaPressed ||
+                                        keyboard.isAltPressed;
+                                    if (zoomModifier && event.scrollDelta.dy != 0) {
+                                      final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
+                                      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
+                                      return;
+                                    }
+                                    if (widget.horizontalZoomOnVerticalWheel && event.scrollDelta.dy != 0) {
+                                      final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
+                                      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
+                                      return;
+                                    }
                                   }
                                   if (event.scrollDelta.dx != 0) {
                                     vm.onHorizontalScroll(event.scrollDelta.dx);
