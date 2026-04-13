@@ -592,6 +592,30 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     widget.onHorizontalZoomFactorChanged?.call(clamped);
   }
 
+  /// Claims [PointerScrollEvent] via [PointerSignalResolver] so an ancestor
+  /// [Scrollable] (e.g. a vertical [ListView] around the chart) does not win
+  /// scroll handling and swallow zoom.
+  bool _registerPointerSignalResolverForHorizontalZoom(PointerScrollEvent event, double viewportW) {
+    if (!widget.allowHorizontalZoomGestures) return false;
+
+    final keyboard = HardwareKeyboard.instance;
+    final zoomModifier =
+        keyboard.isControlPressed || keyboard.isMetaPressed || keyboard.isAltPressed;
+    final bool fromModifierKeys = zoomModifier && event.scrollDelta.dy != 0;
+    final bool fromPlainVerticalWheel =
+        widget.horizontalZoomOnVerticalWheel && event.scrollDelta.dy != 0;
+    if (!fromModifierKeys && !fromPlainVerticalWheel) return false;
+
+    GestureBinding.instance.pointerSignalResolver.register(event, (PointerSignalEvent resolved) {
+      if (resolved is! PointerScrollEvent) return;
+      final dy = resolved.scrollDelta.dy;
+      if (dy == 0) return;
+      final mult = dy > 0 ? 1 / 1.1 : 1.1;
+      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
+    });
+    return true;
+  }
+
   @override
   void didUpdateWidget(covariant LegacyGanttChartWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -920,21 +944,8 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                   : null,
                               onPointerSignal: (event) {
                                 if (event is PointerScrollEvent) {
-                                  if (widget.allowHorizontalZoomGestures) {
-                                    final keyboard = HardwareKeyboard.instance;
-                                    final zoomModifier = keyboard.isControlPressed ||
-                                        keyboard.isMetaPressed ||
-                                        keyboard.isAltPressed;
-                                    if (zoomModifier && event.scrollDelta.dy != 0) {
-                                      final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
-                                      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
-                                      return;
-                                    }
-                                    if (widget.horizontalZoomOnVerticalWheel && event.scrollDelta.dy != 0) {
-                                      final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
-                                      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
-                                      return;
-                                    }
+                                  if (_registerPointerSignalResolverForHorizontalZoom(event, viewportW)) {
+                                    return;
                                   }
                                   if (event.scrollDelta.dx != 0) {
                                     vm.onHorizontalScroll(event.scrollDelta.dx);
