@@ -1,6 +1,7 @@
 // packages/gantt_chart/lib/src/gantt_chart_widget.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:legacy_gantt_chart/src/models/legacy_gantt_dependency.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
@@ -41,6 +42,12 @@ enum GanttLoadingIndicatorPosition {
 /// It handles user interactions such as dragging, resizing, and creating tasks and dependencies.
 ///
 /// It can be used with a static list of data or dynamically with a [LegacyGanttController].
+///
+/// **Horizontal zoom:** Use [horizontalZoomFactor] (≥ 1.0) for more timeline detail. When it is
+/// greater than 1, the chart scrolls horizontally inside the widget. Prefer this over wrapping
+/// the chart in another horizontal [SingleChildScrollView]. With [allowHorizontalZoomGestures],
+/// use Ctrl+scroll or Cmd+scroll (vertical wheel) or a trackpad pinch to zoom; listen with
+/// [onHorizontalZoomFactorChanged] to sync parent state.
 class LegacyGanttChartWidget extends StatefulWidget {
   /// The list of [LegacyGanttTask] objects to display on the chart.
   /// This is ignored if a [controller] or [tasksFuture] is provided.
@@ -352,7 +359,33 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// A scroll controller for the horizontal scrolling of the Gantt chart.
   /// This is used internally to allow programmatic scrolling, for example,
   /// to bring a focused task into view.
+  ///
+  /// When [horizontalZoomFactor] is greater than `1.0`, horizontal scrolling is
+  /// handled inside this widget; pass the same controller here so you can sync
+  /// or jump programmatically. If omitted, an internal controller is created.
   final ScrollController? horizontalScrollController;
+
+  /// Horizontal zoom: `1.0` maps the full [totalGridMin]–[totalGridMax] range to
+  /// the viewport width. Values above `1.0` use more pixels per unit time and
+  /// enable horizontal scrolling inside the chart.
+  ///
+  /// Avoid wrapping the chart in an extra horizontal [SingleChildScrollView]
+  /// when this is above `1.0`; that would nest two horizontal scroll views.
+  final double horizontalZoomFactor;
+
+  /// Minimum for [horizontalZoomFactor] (must be ≥ `1.0`).
+  final double horizontalZoomMin;
+
+  /// Maximum for [horizontalZoomFactor] (must be greater than [horizontalZoomMin]).
+  final double horizontalZoomMax;
+
+  /// When true, Ctrl+scroll / Cmd+scroll (vertical wheel) and trackpad pinch
+  /// adjust zoom within [horizontalZoomMin]–[horizontalZoomMax].
+  final bool allowHorizontalZoomGestures;
+
+  /// Notified when a built-in gesture changes the zoom factor. You can update
+  /// parent state here to keep [horizontalZoomFactor] in sync (controlled mode).
+  final ValueChanged<double>? onHorizontalZoomFactorChanged;
 
   /// A callback invoked when an action (like focusing a task via keyboard)
   /// requires a row to become visible (e.g., by expanding a collapsed parent).
@@ -460,6 +493,11 @@ class LegacyGanttChartWidget extends StatefulWidget {
     this.focusedTaskId,
     this.onFocusChange,
     this.horizontalScrollController,
+    this.horizontalZoomFactor = 1.0,
+    this.horizontalZoomMin = 1.0,
+    this.horizontalZoomMax = 8.0,
+    this.allowHorizontalZoomGestures = true,
+    this.onHorizontalZoomFactorChanged,
     this.focusedTaskResizeHandleBuilder,
     this.focusedTaskResizeHandleWidth = 24.0,
     this.syncClient,
@@ -482,7 +520,10 @@ class LegacyGanttChartWidget extends StatefulWidget {
                 holidays == null &&
                 holidaysFuture == null &&
                 gridMin == null &&
-                gridMax == null));
+                gridMax == null)),
+        assert(horizontalZoomMin >= 1.0),
+        assert(horizontalZoomMax > horizontalZoomMin),
+        assert(horizontalZoomFactor >= horizontalZoomMin && horizontalZoomFactor <= horizontalZoomMax);
 
   @override
   State<LegacyGanttChartWidget> createState() => _LegacyGanttChartWidgetState();
@@ -491,9 +532,65 @@ class LegacyGanttChartWidget extends StatefulWidget {
 class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   LegacyGanttViewModel? _internalViewModel;
 
+  static const double _horizontalZoomScrollEpsilon = 1.0001;
+
+  late double _horizontalZoom;
+  ScrollController? _ownedHorizontalScrollController;
+  double? _pinchZoomStartFactor;
+
+  ScrollController get _horizontalScroll =>
+      widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
+
+  double _clampZoom(double z) => z.clamp(widget.horizontalZoomMin, widget.horizontalZoomMax);
+
+  @override
+  void initState() {
+    super.initState();
+    _horizontalZoom = _clampZoom(widget.horizontalZoomFactor);
+    if (widget.horizontalScrollController == null) {
+      _ownedHorizontalScrollController = ScrollController();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ownedHorizontalScrollController?.dispose();
+    super.dispose();
+  }
+
+  void _preserveHorizontalScrollAnchor(double previousZoom, double newZoom, double viewportWidth) {
+    if (previousZoom <= 0 || viewportWidth <= 0) return;
+    final controller = _horizontalScroll;
+    final prevContentW = viewportWidth * previousZoom;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!controller.hasClients) return;
+      final pos = controller.position;
+      final center = pos.pixels + pos.viewportDimension * 0.5;
+      final ratio = (center / prevContentW).clamp(0.0, 1.0);
+      final newContentW = viewportWidth * newZoom;
+      final target = ratio * newContentW - pos.viewportDimension * 0.5;
+      controller.jumpTo(target.clamp(pos.minScrollExtent, pos.maxScrollExtent));
+    });
+  }
+
+  void _applyHorizontalZoomGesture(double newZoom, double viewportWidth) {
+    final prev = _horizontalZoom;
+    final clamped = _clampZoom(newZoom);
+    if ((clamped - prev).abs() < 1e-6) return;
+    _preserveHorizontalScrollAnchor(prev, clamped, viewportWidth);
+    setState(() => _horizontalZoom = clamped);
+    widget.onHorizontalZoomFactorChanged?.call(clamped);
+  }
+
   @override
   void didUpdateWidget(covariant LegacyGanttChartWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (widget.horizontalZoomFactor != oldWidget.horizontalZoomFactor ||
+        widget.horizontalZoomMin != oldWidget.horizontalZoomMin ||
+        widget.horizontalZoomMax != oldWidget.horizontalZoomMax) {
+      _horizontalZoom = _clampZoom(widget.horizontalZoomFactor);
+    }
 
     if (_internalViewModel != null) {
       _internalViewModel!.updateDependencies(widget.dependencies ?? []);
@@ -752,10 +849,14 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                         return const SizedBox.shrink();
                       }
 
-                      vm.updateLayout(constraints.maxWidth, constraints.maxHeight);
+                      final double viewportW = constraints.maxWidth;
+                      final double zoom = _horizontalZoom;
+                      final double timelineW = viewportW * zoom;
+
+                      vm.updateLayout(timelineW, constraints.maxHeight);
 
                       final double totalContentWidth =
-                          vm.totalDomain.isEmpty ? constraints.maxWidth : vm.totalScale(vm.totalDomain.last);
+                          vm.totalDomain.isEmpty ? timelineW : vm.totalScale(vm.totalDomain.last);
 
                       final double totalContentHeight = widget.visibleRows
                           .where((row) => widget.showEmptyRows || (vm.tasksByRow[row.id]?.isNotEmpty ?? false))
@@ -776,15 +877,45 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                       }
                       final double contentHeight = chartHeight - vm.timeAxisHeight;
 
-                      return Column(
+                      final double layoutHeight =
+                          constraints.maxHeight.isFinite ? constraints.maxHeight : chartHeight;
+                      final double paintWidth = timelineW;
+                      final double paintHeightBelowAxis = layoutHeight - vm.timeAxisHeight;
+
+                      Widget chartArea = Column(
                         children: [
                           Expanded(
                             child: Listener(
                               onPointerDown: vm.onPointerEvent,
                               onPointerUp: vm.onPointerEvent,
                               onPointerCancel: vm.onPointerEvent,
+                              onPointerPanZoomStart: widget.allowHorizontalZoomGestures
+                                  ? (PointerPanZoomStartEvent e) {
+                                      _pinchZoomStartFactor = _horizontalZoom;
+                                    }
+                                  : null,
+                              onPointerPanZoomUpdate: widget.allowHorizontalZoomGestures
+                                  ? (PointerPanZoomUpdateEvent e) {
+                                      final base = _pinchZoomStartFactor;
+                                      if (base == null) return;
+                                      _applyHorizontalZoomGesture(base * e.scale, viewportW);
+                                    }
+                                  : null,
+                              onPointerPanZoomEnd: widget.allowHorizontalZoomGestures
+                                  ? (PointerPanZoomEndEvent e) {
+                                      _pinchZoomStartFactor = null;
+                                    }
+                                  : null,
                               onPointerSignal: (event) {
                                 if (event is PointerScrollEvent) {
+                                  final keyboard = HardwareKeyboard.instance;
+                                  final zoomModifier = widget.allowHorizontalZoomGestures &&
+                                      (keyboard.isControlPressed || keyboard.isMetaPressed);
+                                  if (zoomModifier && event.scrollDelta.dy != 0) {
+                                    final mult = event.scrollDelta.dy > 0 ? 1 / 1.1 : 1.1;
+                                    _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
+                                    return;
+                                  }
                                   if (event.scrollDelta.dx != 0) {
                                     vm.onHorizontalScroll(event.scrollDelta.dx);
                                   }
@@ -822,8 +953,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                             children: [
                                               RepaintBoundary(
                                                 child: CustomPaint(
-                                                  size: Size(
-                                                      constraints.maxWidth, constraints.maxHeight - vm.timeAxisHeight),
+                                                  size: Size(paintWidth, paintHeightBelowAxis),
                                                   painter: AxisPainter(
                                                     x: 0,
                                                     y: 0,
@@ -846,8 +976,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                               ),
                                               RepaintBoundary(
                                                 child: CustomPaint(
-                                                  size: Size(
-                                                      constraints.maxWidth, constraints.maxHeight - vm.timeAxisHeight),
+                                                  size: Size(paintWidth, paintHeightBelowAxis),
                                                   painter: BarsCollectionPainter(
                                                     tasksByRow: vm.tasksByRow,
                                                     conflictIndicators: vm.conflictIndicators,
@@ -895,8 +1024,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                               ),
                                               if (vm.currentTool == GanttTool.select && vm.selectionRect != null)
                                                 CustomPaint(
-                                                  size: Size(
-                                                      constraints.maxWidth, constraints.maxHeight - vm.timeAxisHeight),
+                                                  size: Size(paintWidth, paintHeightBelowAxis),
                                                   painter: _SelectionBoxPainter(
                                                     rect: vm.selectionRect!,
                                                     borderColor: Theme.of(context).primaryColor,
@@ -916,8 +1044,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                                 IgnorePointer(
                                                   child: RepaintBoundary(
                                                     child: CustomPaint(
-                                                      size: Size(constraints.maxWidth,
-                                                          constraints.maxHeight - vm.timeAxisHeight),
+                                                      size: Size(paintWidth, paintHeightBelowAxis),
                                                       painter: CursorPainter(
                                                         remoteCursors:
                                                             vm.showRemoteCursors ? vm.remoteCursors : const {},
@@ -997,6 +1124,24 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                             ),
                           ],
                         ],
+                      );
+
+                      if (zoom > _horizontalZoomScrollEpsilon) {
+                        return SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          primary: false,
+                          controller: _horizontalScroll,
+                          child: SizedBox(
+                            width: timelineW,
+                            height: layoutHeight,
+                            child: chartArea,
+                          ),
+                        );
+                      }
+                      return SizedBox(
+                        width: viewportW,
+                        height: layoutHeight,
+                        child: chartArea,
                       );
                     },
                   ),
