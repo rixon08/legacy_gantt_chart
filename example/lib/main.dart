@@ -1,3 +1,4 @@
+import 'package:example/minimal_gantt_chart_example.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:isolate';
@@ -65,7 +66,7 @@ class MyApp extends StatelessWidget {
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: Brightness.dark),
         ),
         themeMode: ThemeMode.system,
-        home: const GanttView(),
+        home: const MinimalGanttChart(), //const GanttView(),
       );
 }
 

@@ -1,6 +1,7 @@
 // packages/gantt_chart/lib/src/gantt_chart_widget.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:legacy_gantt_chart/src/models/legacy_gantt_dependency.dart';
 import 'package:flutter/scheduler.dart';
@@ -35,6 +36,8 @@ enum GanttLoadingIndicatorPosition {
   /// Positions the linear indicator at the bottom of the chart area.
   bottom,
 }
+
+enum _ScaleGestureMode { none, pan, pinch }
 
 /// The main widget for displaying a Gantt chart.
 ///
@@ -547,11 +550,21 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   late double _horizontalZoom;
   ScrollController? _ownedHorizontalScrollController;
   double? _pinchZoomStartFactor;
+  bool _isPinching = false;
+  _ScaleGestureMode _scaleGestureMode = _ScaleGestureMode.none;
 
   ScrollController get _horizontalScroll =>
       widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
 
   double _clampZoom(double z) => z.clamp(widget.horizontalZoomMin, widget.horizontalZoomMax);
+
+  void _setIsPinching(bool value) {
+    if (_isPinching == value) return;
+    setState(() => _isPinching = value);
+    if (kDebugMode) {
+      debugPrint('LegacyGanttChartWidget isPinching=$_isPinching');
+    }
+  }
 
   @override
   void initState() {
@@ -928,6 +941,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                               onPointerPanZoomStart: widget.allowHorizontalZoomGestures
                                   ? (PointerPanZoomStartEvent e) {
                                       _pinchZoomStartFactor = _horizontalZoom;
+                                      _setIsPinching(true);
                                     }
                                   : null,
                               onPointerPanZoomUpdate: widget.allowHorizontalZoomGestures
@@ -940,6 +954,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                               onPointerPanZoomEnd: widget.allowHorizontalZoomGestures
                                   ? (PointerPanZoomEndEvent e) {
                                       _pinchZoomStartFactor = null;
+                                      _setIsPinching(false);
                                     }
                                   : null,
                               onPointerSignal: (event) {
@@ -961,9 +976,49 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                 }
                               },
                               child: GestureDetector(
-                                onPanStart: (details) => vm.onPanStart(details),
-                                onPanUpdate: (details) => vm.onPanUpdate(details),
-                                onPanEnd: (details) => vm.onPanEnd(details),
+                                // NOTE: GestureDetector forbids mixing onPan* with onScale*.
+                                // We use onScale* for both:
+                                // - 1 pointer: pan/drag interactions (delegate to vm)
+                                // - 2+ pointers: pinch zoom (update horizontal zoom)
+                                onScaleStart: (details) {
+                                  if (details.pointerCount >= 2 && widget.allowHorizontalZoomGestures) {
+                                    _scaleGestureMode = _ScaleGestureMode.pinch;
+                                    _pinchZoomStartFactor = _horizontalZoom;
+                                    _setIsPinching(true);
+                                    return;
+                                  }
+                                  _scaleGestureMode = _ScaleGestureMode.pan;
+                                  vm.onPanStart(DragStartDetails(
+                                    globalPosition: details.focalPoint,
+                                    localPosition: details.localFocalPoint,
+                                  ));
+                                },
+                                onScaleUpdate: (details) {
+                                  if (_scaleGestureMode == _ScaleGestureMode.pinch &&
+                                      widget.allowHorizontalZoomGestures) {
+                                    final base = _pinchZoomStartFactor;
+                                    if (base == null) return;
+                                    if (details.scale == 1.0) return;
+                                    _applyHorizontalZoomGesture(base * details.scale, viewportW);
+                                    return;
+                                  }
+                                  if (_scaleGestureMode == _ScaleGestureMode.pan) {
+                                    vm.onPanUpdate(DragUpdateDetails(
+                                      globalPosition: details.focalPoint,
+                                      localPosition: details.localFocalPoint,
+                                      delta: details.focalPointDelta,
+                                    ));
+                                  }
+                                },
+                                onScaleEnd: (details) {
+                                  if (_scaleGestureMode == _ScaleGestureMode.pinch) {
+                                    _pinchZoomStartFactor = null;
+                                    _setIsPinching(false);
+                                  } else if (_scaleGestureMode == _ScaleGestureMode.pan) {
+                                    vm.onPanEnd(DragEndDetails(velocity: details.velocity));
+                                  }
+                                  _scaleGestureMode = _ScaleGestureMode.none;
+                                },
                                 onTapDown: (details) => vm.onTapDown(details),
                                 onTap: () => vm.onTap(),
                                 onSecondaryTapUp: (details) =>
@@ -1162,6 +1217,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                           scrollDirection: Axis.horizontal,
                           primary: false,
                           controller: _horizontalScroll,
+                          physics: _isPinching ? const NeverScrollableScrollPhysics() : null,
                           child: SizedBox(
                             width: timelineW,
                             height: layoutHeight,
