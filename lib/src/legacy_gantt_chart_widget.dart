@@ -552,6 +552,12 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   double? _pinchZoomStartFactor;
   bool _isPinching = false;
   _ScaleGestureMode _scaleGestureMode = _ScaleGestureMode.none;
+  static const double _pinchScaleDeadZone = 0.015; // ignore tiny scale noise
+  static const double _panStartSlopPx = 6.0; // delay pan start to avoid pinch-jerk
+
+  Offset? _pendingPanStartGlobal;
+  Offset? _pendingPanStartLocal;
+  bool _panStarted = false;
 
   ScrollController get _horizontalScroll =>
       widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
@@ -985,24 +991,57 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                     _scaleGestureMode = _ScaleGestureMode.pinch;
                                     _pinchZoomStartFactor = _horizontalZoom;
                                     _setIsPinching(true);
+                                    _pendingPanStartGlobal = null;
+                                    _pendingPanStartLocal = null;
+                                    _panStarted = false;
                                     return;
                                   }
                                   _scaleGestureMode = _ScaleGestureMode.pan;
-                                  vm.onPanStart(DragStartDetails(
-                                    globalPosition: details.focalPoint,
-                                    localPosition: details.localFocalPoint,
-                                  ));
+                                  // Delay pan start until the finger moves a bit. This prevents a
+                                  // brief horizontal "jerk" when a second finger is added for pinch.
+                                  _pendingPanStartGlobal = details.focalPoint;
+                                  _pendingPanStartLocal = details.localFocalPoint;
+                                  _panStarted = false;
                                 },
                                 onScaleUpdate: (details) {
+                                  // If a second finger is added after the gesture started,
+                                  // aggressively switch to pinch mode to avoid horizontal jitter.
+                                  if (widget.allowHorizontalZoomGestures &&
+                                      details.pointerCount >= 2 &&
+                                      _scaleGestureMode != _ScaleGestureMode.pinch) {
+                                    _scaleGestureMode = _ScaleGestureMode.pinch;
+                                    _pinchZoomStartFactor = _horizontalZoom;
+                                    _setIsPinching(true);
+                                    _pendingPanStartGlobal = null;
+                                    _pendingPanStartLocal = null;
+                                    _panStarted = false;
+                                  }
+
                                   if (_scaleGestureMode == _ScaleGestureMode.pinch &&
                                       widget.allowHorizontalZoomGestures) {
                                     final base = _pinchZoomStartFactor;
                                     if (base == null) return;
-                                    if (details.scale == 1.0) return;
+                                    final delta = (details.scale - 1.0).abs();
+                                    if (delta < _pinchScaleDeadZone) return;
                                     _applyHorizontalZoomGesture(base * details.scale, viewportW);
                                     return;
                                   }
+
                                   if (_scaleGestureMode == _ScaleGestureMode.pan) {
+                                    final startG = _pendingPanStartGlobal;
+                                    final startL = _pendingPanStartLocal;
+                                    if (!_panStarted && startG != null && startL != null) {
+                                      final moved = (details.focalPoint - startG).distance;
+                                      if (moved < _panStartSlopPx) {
+                                        return;
+                                      }
+                                      _panStarted = true;
+                                      vm.onPanStart(DragStartDetails(
+                                        globalPosition: startG,
+                                        localPosition: startL,
+                                      ));
+                                    }
+                                    if (!_panStarted) return;
                                     vm.onPanUpdate(DragUpdateDetails(
                                       globalPosition: details.focalPoint,
                                       localPosition: details.localFocalPoint,
@@ -1015,8 +1054,13 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                     _pinchZoomStartFactor = null;
                                     _setIsPinching(false);
                                   } else if (_scaleGestureMode == _ScaleGestureMode.pan) {
-                                    vm.onPanEnd(DragEndDetails(velocity: details.velocity));
+                                    if (_panStarted) {
+                                      vm.onPanEnd(DragEndDetails(velocity: details.velocity));
+                                    }
                                   }
+                                  _pendingPanStartGlobal = null;
+                                  _pendingPanStartLocal = null;
+                                  _panStarted = false;
                                   _scaleGestureMode = _ScaleGestureMode.none;
                                 },
                                 onTapDown: (details) => vm.onTapDown(details),
