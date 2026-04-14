@@ -1240,10 +1240,25 @@ class BarsCollectionPainter extends CustomPainter {
     for (var rowData in visibleRows) {
       if (rowData.id == task.rowId) {
         final double barTop = cumulativeRowTop + (task.stackIndex * rowHeight);
-        final double barHeight = rowHeight * theme.barHeightRatio;
-        final double barVerticalCenterOffset = (rowHeight - barHeight) / 2;
         final double barStartX = scale(task.start);
         final double barEndX = scale(task.end);
+
+        // If the consumer provides a custom milestone bar widget (via taskBarBuilder),
+        // the visual "diamond" is typically centered within the widget and sized to
+        // the full row height. To keep dependency arrows attached to the diamond
+        // (not the time-based bar rect), use a centered square rect here.
+        if (task.isMilestone && hasCustomTaskBuilder) {
+          final double width = barEndX - barStartX;
+          if (width.isFinite) {
+            final double centerX = barStartX + (width / 2);
+            final double side = rowHeight * 0.8;
+            final double top = barTop + (rowHeight - side) / 2;
+            return Rect.fromLTWH(centerX - side / 2, top, side, side);
+          }
+        }
+
+        final double barHeight = rowHeight * theme.barHeightRatio;
+        final double barVerticalCenterOffset = (rowHeight - barHeight) / 2;
         return Rect.fromLTWH(barStartX, barTop + barVerticalCenterOffset, barEndX - barStartX, barHeight);
       }
       final int stackDepth = rowMaxStackDepth[rowData.id] ?? 1;

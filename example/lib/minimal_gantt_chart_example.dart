@@ -88,9 +88,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
       end: task.end,
     )).toList();
 
-    List<LegacyGanttTaskDependency> deps = [
-      
-    ];
+    List<LegacyGanttTaskDependency> deps = [];
 
   @override
   void initState() {
@@ -106,13 +104,21 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
         end: _currentDate.add(Duration(days: i + 1)),
       ));
       rows.add(LegacyGanttRow(id: 'row$i', label: 'Task Label $i'));
-      // if (i < 49)
-      // deps.add(LegacyGanttTaskDependency(
-      //   predecessorTaskId: 'task$i',
-      //   successorTaskId: 'task${i + 1}',
-      //   type: DependencyType.finishToStart,
-      // ));
     }
+
+    // A couple dependencies to demonstrate arrows attaching to the milestone diamond.
+    deps.addAll(const [
+      LegacyGanttTaskDependency(
+        predecessorTaskId: 'task1',
+        successorTaskId: 'task0',
+        type: DependencyType.finishToStart,
+      ),
+      LegacyGanttTaskDependency(
+        predecessorTaskId: 'task0',
+        successorTaskId: 'task2',
+        type: DependencyType.finishToStart,
+      ),
+    ]);
     super.initState();
   }
 
@@ -233,6 +239,15 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                   rowMaxStackDepth: {for (final r in rows) r.id: 1},
                   gridMin: _visibleStart.millisecondsSinceEpoch.toDouble(),
                   gridMax: _visibleEnd.millisecondsSinceEpoch.toDouble(),
+                  // Example: custom milestone diamond via taskBarBuilder.
+                  // Dependency arrows for milestones will attach to the diamond (0.8 * rowHeight),
+                  // not the full time-width bar rect.
+                  taskBarBuilder: (task) {
+                    if (task.isMilestone) {
+                      return const _ExampleMilestoneDiamondBar();
+                    }
+                    return _ExampleTaskBar(name: task.name ?? task.id, color: task.color ?? Colors.blue);
+                  },
                   timelineAxisHeaderBuilder: (context, scale, visibleDomain, totalDomain, theme, totalContentWidth) {
                     return Container(
                       color: theme.backgroundColor,
@@ -259,6 +274,74 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
       ),
     );
   }
+}
+
+class _ExampleTaskBar extends StatelessWidget {
+  const _ExampleTaskBar({required this.name, required this.color});
+
+  final String name;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final onColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: onColor, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+class _ExampleMilestoneDiamondBar extends StatelessWidget {
+  const _ExampleMilestoneDiamondBar();
+
+  static const Color _milestoneYellow = Color(0xFFFFC107);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: CustomPaint(
+        painter: _ExampleMilestoneDiamondPainter(color: _milestoneYellow),
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+}
+
+class _ExampleMilestoneDiamondPainter extends CustomPainter {
+  const _ExampleMilestoneDiamondPainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final side = size.height;
+    final x = (size.width - side) / 2;
+    const y = 0.0;
+    final path = Path()
+      ..moveTo(x, y + side / 2)
+      ..lineTo(x + side / 2, y)
+      ..lineTo(x + side, y + side / 2)
+      ..lineTo(x + side / 2, y + side)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ExampleMilestoneDiamondPainter oldDelegate) => oldDelegate.color != color;
 }
 
 class MinimalGanttChart2 extends StatelessWidget {
