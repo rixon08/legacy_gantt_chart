@@ -545,8 +545,6 @@ class LegacyGanttChartWidget extends StatefulWidget {
 class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   LegacyGanttViewModel? _internalViewModel;
 
-  static const double _horizontalZoomScrollEpsilon = 1.0001;
-
   late double _horizontalZoom;
   ScrollController? _ownedHorizontalScrollController;
   double? _pinchZoomStartFactor;
@@ -558,12 +556,6 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   Offset? _pendingPanStartGlobal;
   Offset? _pendingPanStartLocal;
   bool _panStarted = false;
-
-  /// Bridges horizontal pixel scroll at min/max extent into a time pan so
-  /// zoomed charts can keep moving instead of stopping at scroll limits.
-  bool _horizontalEdgeRebalancing = false;
-  DateTime _lastHorizontalEdgePan = DateTime.fromMillisecondsSinceEpoch(0);
-  static const Duration _horizontalEdgePanMinInterval = Duration(milliseconds: 24);
 
   ScrollController get _horizontalScroll =>
       widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
@@ -593,34 +585,37 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     super.dispose();
   }
 
-  void _preserveHorizontalScrollAnchor(double previousZoom, double newZoom, double viewportWidth) {
-    if (previousZoom <= 0 || viewportWidth <= 0) return;
-    final controller = _horizontalScroll;
-    final prevContentW = viewportWidth * previousZoom;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!controller.hasClients) return;
-      final pos = controller.position;
-      final center = pos.pixels + pos.viewportDimension * 0.5;
-      final ratio = (center / prevContentW).clamp(0.0, 1.0);
-      final newContentW = viewportWidth * newZoom;
-      final target = ratio * newContentW - pos.viewportDimension * 0.5;
-      controller.jumpTo(target.clamp(pos.minScrollExtent, pos.maxScrollExtent));
-    });
-  }
-
-  void _applyHorizontalZoomGesture(double newZoom, double viewportWidth) {
+  void _applyHorizontalZoomGesture(LegacyGanttViewModel vm, double newZoom) {
     final prev = _horizontalZoom;
     final clamped = _clampZoom(newZoom);
     if ((clamped - prev).abs() < 1e-6) return;
-    _preserveHorizontalScrollAnchor(prev, clamped, viewportWidth);
     setState(() => _horizontalZoom = clamped);
     widget.onHorizontalZoomFactorChanged?.call(clamped);
+
+    // Option A: zoom changes the visible time window (like zoom=1 pan behavior),
+    // avoiding a horizontal ScrollView with hard extents/jitter at edges.
+    final visible = vm.visibleExtent;
+    if (visible.isEmpty) return;
+    final start = visible.first;
+    final end = visible.last;
+    final durationMs = end.millisecondsSinceEpoch - start.millisecondsSinceEpoch;
+    if (durationMs <= 0) return;
+
+    final centerMs = start.millisecondsSinceEpoch + (durationMs / 2.0);
+    final newDurationMs = durationMs * (prev / clamped);
+    final newStartMs = centerMs - newDurationMs / 2.0;
+    final newEndMs = centerMs + newDurationMs / 2.0;
+
+    vm.setVisibleRange(
+      DateTime.fromMillisecondsSinceEpoch(newStartMs.round()),
+      DateTime.fromMillisecondsSinceEpoch(newEndMs.round()),
+    );
   }
 
   /// Claims [PointerScrollEvent] via [PointerSignalResolver] so an ancestor
   /// [Scrollable] (e.g. a vertical [ListView] around the chart) does not win
   /// scroll handling and swallow zoom.
-  bool _registerPointerSignalResolverForHorizontalZoom(PointerScrollEvent event, double viewportW) {
+  bool _registerPointerSignalResolverForHorizontalZoom(PointerScrollEvent event, LegacyGanttViewModel vm) {
     if (!widget.allowHorizontalZoomGestures) return false;
 
     final keyboard = HardwareKeyboard.instance;
@@ -636,89 +631,14 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
       final dy = resolved.scrollDelta.dy;
       if (dy == 0) return;
       final mult = dy > 0 ? 1 / 1.1 : 1.1;
-      _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
+      _applyHorizontalZoomGesture(vm, _horizontalZoom * mult);
     });
     return true;
   }
 
-  void _panTimelineHorizontallyByPixels(LegacyGanttViewModel vm, double pixels) {
-    if (widget.controller != null) {
-      final ctrl = widget.controller!;
-      final d = vm.horizontalPixelsToDuration(pixels);
-      var s = ctrl.visibleStartDate.add(d);
-      var e = ctrl.visibleEndDate.add(d);
-      if (widget.totalGridMin != null) {
-        final tMin = DateTime.fromMillisecondsSinceEpoch(widget.totalGridMin!.toInt());
-        if (s.isBefore(tMin)) {
-          final fix = tMin.difference(s);
-          s = s.add(fix);
-          e = e.add(fix);
-        }
-      }
-      if (widget.totalGridMax != null) {
-        final tMax = DateTime.fromMillisecondsSinceEpoch(widget.totalGridMax!.toInt());
-        if (e.isAfter(tMax)) {
-          final fix = e.difference(tMax);
-          s = s.subtract(fix);
-          e = e.subtract(fix);
-        }
-      }
-      ctrl.setVisibleRange(s, e);
-    } else {
-      vm.onHorizontalScroll(pixels);
-    }
-  }
-
-  bool _onHorizontalScrollEdgeNotification(ScrollNotification n, LegacyGanttViewModel vm, double zoom) {
-    if (_horizontalEdgeRebalancing || _isPinching) return false;
-    if (zoom <= _horizontalZoomScrollEpsilon) return false;
-    if (!_horizontalScroll.hasClients) return false;
-    if (n.metrics.axis != Axis.horizontal) return false;
-
-    double? panPixels;
-    if (n is OverscrollNotification) {
-      final o = n.overscroll;
-      if (o.abs() < 2.5) return false;
-      panPixels = o * 0.35;
-    } else if (n is ScrollUpdateNotification) {
-      final m = n.metrics;
-      if (m.maxScrollExtent <= m.minScrollExtent) return false;
-      final sd = n.scrollDelta;
-      if (sd == null) return false;
-      const edge = 2.0;
-      if (m.pixels >= m.maxScrollExtent - edge && sd > 0) {
-        panPixels = 56.0;
-      } else if (m.pixels <= m.minScrollExtent + edge && sd < 0) {
-        panPixels = -56.0;
-      }
-    }
-    if (panPixels == null) return false;
-    final double panPx = panPixels;
-
-    final now = DateTime.now();
-    if (now.difference(_lastHorizontalEdgePan) < _horizontalEdgePanMinInterval) return false;
-    _lastHorizontalEdgePan = now;
-
-    _horizontalEdgeRebalancing = true;
-    _panTimelineHorizontallyByPixels(vm, panPx);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        _horizontalEdgeRebalancing = false;
-        return;
-      }
-      try {
-        if (_horizontalScroll.hasClients) {
-          final pos = _horizontalScroll.position;
-          final next = (pos.pixels - panPx * 0.45).clamp(pos.minScrollExtent, pos.maxScrollExtent);
-          _horizontalScroll.jumpTo(next.toDouble());
-        }
-      } finally {
-        _horizontalEdgeRebalancing = false;
-      }
-    });
-
-    return false;
-  }
+  // (Removed) Horizontal scroll-edge "rebalancing". In Option A zoom mode the chart
+  // does not use an internal horizontal ScrollView, so hard extents and edge
+  // bridging are unnecessary and can cause jitter.
 
   @override
   void didUpdateWidget(covariant LegacyGanttChartWidget oldWidget) {
@@ -989,8 +909,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                       }
 
                       final double viewportW = constraints.maxWidth;
-                      final double zoom = _horizontalZoom;
-                      final double timelineW = viewportW * zoom;
+                      final double timelineW = viewportW;
 
                       vm.updateLayout(timelineW, constraints.maxHeight);
 
@@ -1039,7 +958,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                   ? (PointerPanZoomUpdateEvent e) {
                                       final base = _pinchZoomStartFactor;
                                       if (base == null) return;
-                                      _applyHorizontalZoomGesture(base * e.scale, viewportW);
+                                      _applyHorizontalZoomGesture(vm, base * e.scale);
                                     }
                                   : null,
                               onPointerPanZoomEnd: widget.allowHorizontalZoomGestures
@@ -1050,7 +969,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                   : null,
                               onPointerSignal: (event) {
                                 if (event is PointerScrollEvent) {
-                                  if (_registerPointerSignalResolverForHorizontalZoom(event, viewportW)) {
+                                  if (_registerPointerSignalResolverForHorizontalZoom(event, vm)) {
                                     return;
                                   }
                                   if (event.scrollDelta.dx != 0) {
@@ -1108,7 +1027,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                                     if (base == null) return;
                                     final delta = (details.scale - 1.0).abs();
                                     if (delta < _pinchScaleDeadZone) return;
-                                    _applyHorizontalZoomGesture(base * details.scale, viewportW);
+                                    _applyHorizontalZoomGesture(vm, base * details.scale);
                                     return;
                                   }
 
@@ -1340,23 +1259,6 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                           ],
                         ],
                       );
-
-                      if (zoom > _horizontalZoomScrollEpsilon) {
-                        return NotificationListener<ScrollNotification>(
-                          onNotification: (ScrollNotification n) => _onHorizontalScrollEdgeNotification(n, vm, zoom),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            primary: false,
-                            controller: _horizontalScroll,
-                            physics: _isPinching ? const NeverScrollableScrollPhysics() : null,
-                            child: SizedBox(
-                              width: timelineW,
-                              height: layoutHeight,
-                              child: chartArea,
-                            ),
-                          ),
-                        );
-                      }
                       return SizedBox(
                         width: viewportW,
                         height: layoutHeight,

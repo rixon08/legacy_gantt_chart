@@ -2679,6 +2679,43 @@ class LegacyGanttViewModel extends ChangeNotifier {
     if (!isDisposed) notifyListeners();
   }
 
+  /// Sets the visible time range explicitly (used by zoom behaviors).
+  ///
+  /// This mirrors the clamping/callback behavior of [_handleHorizontalScroll]
+  /// but accepts absolute range endpoints instead of a pixel delta.
+  void setVisibleRange(DateTime start, DateTime end) {
+    if (isDisposed) return;
+    if (end.isBefore(start)) {
+      end = start;
+    }
+
+    double newGridMin = start.millisecondsSinceEpoch.toDouble();
+    double newGridMax = end.millisecondsSinceEpoch.toDouble();
+
+    // Clamp to optional total bounds while preserving duration.
+    if (totalGridMin != null && newGridMin < totalGridMin!) {
+      final diff = totalGridMin! - newGridMin;
+      newGridMin += diff;
+      newGridMax += diff;
+    }
+    if (totalGridMax != null && newGridMax > totalGridMax!) {
+      final diff = newGridMax - totalGridMax!;
+      newGridMin -= diff;
+      newGridMax -= diff;
+    }
+
+    gridMin = newGridMin;
+    gridMax = newGridMax;
+    _calculateDomains();
+    _calculateRowOffsets();
+
+    if (onVisibleRangeChanged != null && _visibleExtent.isNotEmpty) {
+      onVisibleRangeChanged!(_visibleExtent.first, _visibleExtent.last);
+    }
+
+    notifyListeners();
+  }
+
   /// Handles horizontal scroll events, e.g., from a mouse wheel or trackpad.
   void onHorizontalScroll(double delta) {
     _handleHorizontalScroll(delta);
