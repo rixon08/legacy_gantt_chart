@@ -559,6 +559,12 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   Offset? _pendingPanStartLocal;
   bool _panStarted = false;
 
+  /// Bridges horizontal pixel scroll at min/max extent into a time pan so
+  /// zoomed charts can keep moving instead of stopping at scroll limits.
+  bool _horizontalEdgeRebalancing = false;
+  DateTime _lastHorizontalEdgePan = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _horizontalEdgePanMinInterval = Duration(milliseconds: 24);
+
   ScrollController get _horizontalScroll =>
       widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
 
@@ -568,7 +574,7 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     if (_isPinching == value) return;
     setState(() => _isPinching = value);
     if (kDebugMode) {
-      debugPrint('LegacyGanttChartWidget isPinching=$_isPinching');
+      // debugPrint('LegacyGanttChartWidget isPinching=$_isPinching');
     }
   }
 
@@ -633,6 +639,85 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
       _applyHorizontalZoomGesture(_horizontalZoom * mult, viewportW);
     });
     return true;
+  }
+
+  void _panTimelineHorizontallyByPixels(LegacyGanttViewModel vm, double pixels) {
+    if (widget.controller != null) {
+      final ctrl = widget.controller!;
+      final d = vm.horizontalPixelsToDuration(pixels);
+      var s = ctrl.visibleStartDate.add(d);
+      var e = ctrl.visibleEndDate.add(d);
+      if (widget.totalGridMin != null) {
+        final tMin = DateTime.fromMillisecondsSinceEpoch(widget.totalGridMin!.toInt());
+        if (s.isBefore(tMin)) {
+          final fix = tMin.difference(s);
+          s = s.add(fix);
+          e = e.add(fix);
+        }
+      }
+      if (widget.totalGridMax != null) {
+        final tMax = DateTime.fromMillisecondsSinceEpoch(widget.totalGridMax!.toInt());
+        if (e.isAfter(tMax)) {
+          final fix = e.difference(tMax);
+          s = s.subtract(fix);
+          e = e.subtract(fix);
+        }
+      }
+      ctrl.setVisibleRange(s, e);
+    } else {
+      vm.onHorizontalScroll(pixels);
+    }
+  }
+
+  bool _onHorizontalScrollEdgeNotification(ScrollNotification n, LegacyGanttViewModel vm, double zoom) {
+    if (_horizontalEdgeRebalancing || _isPinching) return false;
+    if (zoom <= _horizontalZoomScrollEpsilon) return false;
+    if (!_horizontalScroll.hasClients) return false;
+    if (n.metrics.axis != Axis.horizontal) return false;
+
+    double? panPixels;
+    if (n is OverscrollNotification) {
+      final o = n.overscroll;
+      if (o.abs() < 2.5) return false;
+      panPixels = o * 0.35;
+    } else if (n is ScrollUpdateNotification) {
+      final m = n.metrics;
+      if (m.maxScrollExtent <= m.minScrollExtent) return false;
+      final sd = n.scrollDelta;
+      if (sd == null) return false;
+      const edge = 2.0;
+      if (m.pixels >= m.maxScrollExtent - edge && sd > 0) {
+        panPixels = 56.0;
+      } else if (m.pixels <= m.minScrollExtent + edge && sd < 0) {
+        panPixels = -56.0;
+      }
+    }
+    if (panPixels == null) return false;
+    final double panPx = panPixels;
+
+    final now = DateTime.now();
+    if (now.difference(_lastHorizontalEdgePan) < _horizontalEdgePanMinInterval) return false;
+    _lastHorizontalEdgePan = now;
+
+    _horizontalEdgeRebalancing = true;
+    _panTimelineHorizontallyByPixels(vm, panPx);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _horizontalEdgeRebalancing = false;
+        return;
+      }
+      try {
+        if (_horizontalScroll.hasClients) {
+          final pos = _horizontalScroll.position;
+          final next = (pos.pixels - panPx * 0.45).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+          _horizontalScroll.jumpTo(next.toDouble());
+        }
+      } finally {
+        _horizontalEdgeRebalancing = false;
+      }
+    });
+
+    return false;
   }
 
   @override
@@ -1257,15 +1342,18 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
                       );
 
                       if (zoom > _horizontalZoomScrollEpsilon) {
-                        return SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          primary: false,
-                          controller: _horizontalScroll,
-                          physics: _isPinching ? const NeverScrollableScrollPhysics() : null,
-                          child: SizedBox(
-                            width: timelineW,
-                            height: layoutHeight,
-                            child: chartArea,
+                        return NotificationListener<ScrollNotification>(
+                          onNotification: (ScrollNotification n) => _onHorizontalScrollEdgeNotification(n, vm, zoom),
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            primary: false,
+                            controller: _horizontalScroll,
+                            physics: _isPinching ? const NeverScrollableScrollPhysics() : null,
+                            child: SizedBox(
+                              width: timelineW,
+                              height: layoutHeight,
+                              child: chartArea,
+                            ),
                           ),
                         );
                       }

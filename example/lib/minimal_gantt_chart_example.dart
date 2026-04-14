@@ -213,7 +213,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                       _visibleEnd = end;
                     });
                   },
-                  enableDragAndDrop: true,
+                  enableDragAndDrop: false,
 
                   horizontalZoomFactor: _zoom,
                   allowHorizontalZoomGestures: true,
@@ -223,7 +223,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                   horizontalZoomOnVerticalWheel: true,
                   onHorizontalZoomFactorChanged: (z) => setState(() {
                     _zoom = z;
-                    debugPrint('zoom: $_zoom');
+                    // debugPrint('zoom: $_zoom');
                   }),
                   dependencies: deps,
                   data: tasks,

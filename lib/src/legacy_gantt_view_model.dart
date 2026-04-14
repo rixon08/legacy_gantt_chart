@@ -2679,6 +2679,13 @@ class LegacyGanttViewModel extends ChangeNotifier {
     _handleHorizontalScroll(delta);
   }
 
+  /// Converts a horizontal pixel delta on the current timeline layout into a
+  /// [Duration], using the same mapping as [onHorizontalScroll].
+  ///
+  /// Useful when bridging pixel-based scrolling (for example at scroll extents)
+  /// to the visible date range.
+  Duration horizontalPixelsToDuration(double pixels) => _pixelToDuration(pixels);
+
   bool _wouldCreateCycle(String fromId, String toId) {
     if (fromId == toId) return true;
 
