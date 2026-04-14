@@ -2427,7 +2427,10 @@ class LegacyGanttViewModel extends ChangeNotifier {
 
     setTranslateY(clampedTranslateY);
     _isScrollingInternally = true;
-    scrollController?.jumpTo(-clampedTranslateY);
+
+    if (scrollController != null && scrollController!.hasClients){
+      scrollController?.jumpTo(-clampedTranslateY);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _isScrollingInternally = false);
   }
 
@@ -2445,7 +2448,9 @@ class LegacyGanttViewModel extends ChangeNotifier {
 
     setTranslateY(clampedTranslateY);
     _isScrollingInternally = true;
-    scrollController?.jumpTo(-clampedTranslateY);
+    if (scrollController != null && scrollController!.hasClients){
+      scrollController?.jumpTo(-clampedTranslateY);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _isScrollingInternally = false);
   }
 
