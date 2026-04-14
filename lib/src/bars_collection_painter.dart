@@ -1244,17 +1244,15 @@ class BarsCollectionPainter extends CustomPainter {
         final double barEndX = scale(task.end);
 
         // If the consumer provides a custom milestone bar widget (via taskBarBuilder),
-        // the visual "diamond" is typically centered within the widget and sized to
-        // the full row height. To keep dependency arrows attached to the diamond
-        // (not the time-based bar rect), use a centered square rect here.
+        // keep dependency arrows attached to the diamond (not the time-based bar rect).
+        //
+        // For long "label width" milestones (where end is extended to make room for text),
+        // anchoring to the *center* would shift the diamond away from startDate. To keep
+        // the milestone marker visually at startDate, anchor the diamond at barStartX.
         if (task.isMilestone && hasCustomTaskBuilder) {
-          final double width = barEndX - barStartX;
-          if (width.isFinite) {
-            final double centerX = barStartX + (width / 2);
-            final double side = rowHeight * 0.8;
-            final double top = barTop + (rowHeight - side) / 2;
-            return Rect.fromLTWH(centerX - side / 2, top, side, side);
-          }
+          final double side = rowHeight * 0.8;
+          final double top = barTop + (rowHeight - side) / 2;
+          return Rect.fromLTWH(barStartX, top, side, side);
         }
 
         final double barHeight = rowHeight * theme.barHeightRatio;

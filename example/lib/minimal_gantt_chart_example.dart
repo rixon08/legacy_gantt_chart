@@ -101,7 +101,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
         name: 'Task $i',
         isMilestone: i == 0,
         start: _currentDate.add(Duration(days: i)),
-        end: _currentDate.add(Duration(days: i + 1)),
+        end: _currentDate.add(Duration(days: i + (i == 0 ? 100 : 1))),
       ));
       rows.add(LegacyGanttRow(id: 'row$i', label: 'Task Label $i'));
     }
@@ -244,7 +244,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                   // not the full time-width bar rect.
                   taskBarBuilder: (task) {
                     if (task.isMilestone) {
-                      return const _ExampleMilestoneDiamondBar();
+                      return _ExampleMilestoneDiamondWithLabel(name: task.name ?? '');
                     }
                     return _ExampleTaskBar(name: task.name ?? task.id, color: task.color ?? Colors.blue);
                   },
@@ -303,19 +303,47 @@ class _ExampleTaskBar extends StatelessWidget {
   }
 }
 
-class _ExampleMilestoneDiamondBar extends StatelessWidget {
-  const _ExampleMilestoneDiamondBar();
+class _ExampleMilestoneDiamondWithLabel extends StatelessWidget {
+  const _ExampleMilestoneDiamondWithLabel({required this.name});
+
+  final String name;
 
   static const Color _milestoneYellow = Color(0xFFFFC107);
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: CustomPaint(
-        painter: _ExampleMilestoneDiamondPainter(color: _milestoneYellow),
-        child: const SizedBox.expand(),
-      ),
+    // Render the diamond at the start (left) of the milestone bar, while the
+    // label is to the right of the diamond. This matches the dependency-anchor
+    // behavior for custom milestones (anchored at startDate).
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final diamondSide = constraints.maxHeight * 0.8;
+        const gap = 10.0;
+        return Row(
+          mainAxisSize: MainAxisSize.max,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: diamondSide,
+              height: diamondSide,
+              child: CustomPaint(
+                painter: const _ExampleMilestoneDiamondPainter(color: _milestoneYellow),
+                child: const SizedBox.expand(),
+              ),
+            ),
+            const SizedBox(width: gap),
+            Expanded(
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.visible,
+                softWrap: false,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
