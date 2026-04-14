@@ -46,9 +46,10 @@ enum _ScaleGestureMode { none, pan, pinch }
 ///
 /// It can be used with a static list of data or dynamically with a [LegacyGanttController].
 ///
-/// **Horizontal zoom:** Use [horizontalZoomFactor] (≥ 1.0) for more timeline detail. When it is
-/// greater than 1, the chart scrolls horizontally inside the widget. Prefer this over wrapping
-/// the chart in another horizontal [SingleChildScrollView]. With [allowHorizontalZoomGestures],
+/// **Horizontal zoom:** Use [horizontalZoomFactor] (≥ 1.0) for more timeline detail. The chart
+/// keeps a fixed viewport width and zoom adjusts the **visible time window** (Option A). Prefer
+/// this over wrapping the chart in another horizontal [SingleChildScrollView]. With
+/// [allowHorizontalZoomGestures],
 /// use a trackpad pinch, Ctrl/Cmd/**Alt** + vertical scroll, or (if
 /// [horizontalZoomOnVerticalWheel] is true) plain vertical wheel/trackpad pan. Listen with
 /// [onHorizontalZoomFactorChanged] to sync parent state (`horizontalZoomFactor: _zoom` in the
@@ -366,17 +367,13 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// This is used internally to allow programmatic scrolling, for example,
   /// to bring a focused task into view.
   ///
-  /// When [horizontalZoomFactor] is greater than `1.0`, horizontal scrolling is
-  /// handled inside this widget; pass the same controller here so you can sync
-  /// or jump programmatically. If omitted, an internal controller is created.
+  /// Optional horizontal scroll controller (e.g. to bring a task into view). The
+  /// chart does not rely on a horizontal [ScrollView] for zoom (Option A).
   final ScrollController? horizontalScrollController;
 
-  /// Horizontal zoom: `1.0` maps the full [totalGridMin]–[totalGridMax] range to
-  /// the viewport width. Values above `1.0` use more pixels per unit time and
-  /// enable horizontal scrolling inside the chart.
-  ///
-  /// Avoid wrapping the chart in an extra horizontal [SingleChildScrollView]
-  /// when this is above `1.0`; that would nest two horizontal scroll views.
+  /// Horizontal zoom: `1.0` is the reference window width in time. Values above
+  /// `1.0` show a **narrower** time range (more detail) while keeping the same
+  /// pixel viewport width.
   final double horizontalZoomFactor;
 
   /// Minimum for [horizontalZoomFactor] (must be ≥ `1.0`).
@@ -398,6 +395,15 @@ class LegacyGanttChartWidget extends StatefulWidget {
   /// Notified when a built-in gesture changes the zoom factor. You can update
   /// parent state here to keep [horizontalZoomFactor] in sync (controlled mode).
   final ValueChanged<double>? onHorizontalZoomFactorChanged;
+
+  /// Called when the chart updates the **zoom=1 reference window** used for
+  /// reset-to-zoom-1 behavior: the visible window (`start`/`end`) at the moment the
+  /// user leaves `horizontalZoomFactor == 1.0` (zoom in). Resetting zoom to
+  /// `1.0` re-applies that window **duration**, centered on the current visible midpoint.
+  ///
+  /// After a reset back to zoom `1.0`, the baseline is refreshed to the new zoom-1
+  /// window so the next zoom-in uses the latest reference.
+  final void Function(DateTime start, DateTime end)? onHorizontalZoomBaselineCaptured;
 
   /// A callback invoked when an action (like focusing a task via keyboard)
   /// requires a row to become visible (e.g., by expanding a collapsed parent).
@@ -511,6 +517,7 @@ class LegacyGanttChartWidget extends StatefulWidget {
     this.allowHorizontalZoomGestures = true,
     this.horizontalZoomOnVerticalWheel = true,
     this.onHorizontalZoomFactorChanged,
+    this.onHorizontalZoomBaselineCaptured,
     this.focusedTaskResizeHandleBuilder,
     this.focusedTaskResizeHandleWidth = 24.0,
     this.syncClient,
@@ -546,6 +553,8 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   LegacyGanttViewModel? _internalViewModel;
 
   late double _horizontalZoom;
+  /// Reference visible window captured when leaving zoom == 1 (each zoom-in).
+  DateTimeRange? _horizontalZoomBaseline;
   ScrollController? _ownedHorizontalScrollController;
   double? _pinchZoomStartFactor;
   bool _isPinching = false;
@@ -556,9 +565,6 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
   Offset? _pendingPanStartGlobal;
   Offset? _pendingPanStartLocal;
   bool _panStarted = false;
-
-  ScrollController get _horizontalScroll =>
-      widget.horizontalScrollController ?? _ownedHorizontalScrollController!;
 
   double _clampZoom(double z) => z.clamp(widget.horizontalZoomMin, widget.horizontalZoomMax);
 
@@ -585,12 +591,23 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     super.dispose();
   }
 
-  void _applyHorizontalZoomGesture(LegacyGanttViewModel vm, double newZoom) {
+  void _schedulePostFrame(void Function() fn) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      fn();
+    });
+  }
+
+  void _applyHorizontalZoomGesture(
+    LegacyGanttViewModel vm,
+    double newZoom, {
+    bool deferParentNotifications = false,
+  }) {
     final prev = _horizontalZoom;
     final clamped = _clampZoom(newZoom);
     if ((clamped - prev).abs() < 1e-6) return;
-    setState(() => _horizontalZoom = clamped);
-    widget.onHorizontalZoomFactorChanged?.call(clamped);
+
+    final notifyRange = !deferParentNotifications;
 
     // Option A: zoom changes the visible time window (like zoom=1 pan behavior),
     // avoiding a horizontal ScrollView with hard extents/jitter at edges.
@@ -601,15 +618,80 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     final durationMs = end.millisecondsSinceEpoch - start.millisecondsSinceEpoch;
     if (durationMs <= 0) return;
 
+    // Capture reference window at the moment user leaves zoom == 1 (zoom in).
+    // Must happen BEFORE mutating `_horizontalZoom`, otherwise `prev` checks break.
+    if (prev <= 1.000001 && clamped > 1.000001) {
+      _horizontalZoomBaseline = DateTimeRange(start: start, end: end);
+      if (deferParentNotifications) {
+        final s = start;
+        final e = end;
+        _schedulePostFrame(() {
+          widget.onHorizontalZoomBaselineCaptured?.call(s, e);
+        });
+      } else {
+        widget.onHorizontalZoomBaselineCaptured?.call(start, end);
+      }
+    }
+
+    setState(() => _horizontalZoom = clamped);
+    if (deferParentNotifications) {
+      _schedulePostFrame(() => widget.onHorizontalZoomFactorChanged?.call(clamped));
+    } else {
+      widget.onHorizontalZoomFactorChanged?.call(clamped);
+    }
+
+    // Reset to zoom 1: restore the **baseline duration**, centered on the current window.
+    if (clamped <= 1.000001 && _horizontalZoomBaseline != null) {
+      final base = _horizontalZoomBaseline!;
+      final baseMs = base.end.millisecondsSinceEpoch - base.start.millisecondsSinceEpoch;
+      if (baseMs <= 0) return;
+      final centerMs = start.millisecondsSinceEpoch + (durationMs / 2.0);
+      final newStartMs = centerMs - baseMs / 2.0;
+      final newEndMs = centerMs + baseMs / 2.0;
+      final newStart = DateTime.fromMillisecondsSinceEpoch(newStartMs.round());
+      final newEnd = DateTime.fromMillisecondsSinceEpoch(newEndMs.round());
+      vm.setVisibleRange(newStart, newEnd, notifyVisibleRangeChanged: notifyRange);
+      // Keep widget props and view-model overrides aligned even when deferring parent setState.
+      if (deferParentNotifications) {
+        vm.updateVisibleRange(newStart.millisecondsSinceEpoch.toDouble(), newEnd.millisecondsSinceEpoch.toDouble());
+      }
+      // Next zoom-in should use the latest zoom=1 window as reference.
+      _horizontalZoomBaseline = DateTimeRange(start: newStart, end: newEnd);
+      if (deferParentNotifications) {
+        final s = newStart;
+        final e = newEnd;
+        _schedulePostFrame(() {
+          widget.onVisibleRangeChanged?.call(s, e);
+          widget.onHorizontalZoomBaselineCaptured?.call(s, e);
+        });
+      } else {
+        widget.onVisibleRangeChanged?.call(newStart, newEnd);
+        widget.onHorizontalZoomBaselineCaptured?.call(newStart, newEnd);
+      }
+      return;
+    }
+
     final centerMs = start.millisecondsSinceEpoch + (durationMs / 2.0);
     final newDurationMs = durationMs * (prev / clamped);
     final newStartMs = centerMs - newDurationMs / 2.0;
     final newEndMs = centerMs + newDurationMs / 2.0;
 
+    final rangeStart = DateTime.fromMillisecondsSinceEpoch(newStartMs.round());
+    final rangeEnd = DateTime.fromMillisecondsSinceEpoch(newEndMs.round());
     vm.setVisibleRange(
-      DateTime.fromMillisecondsSinceEpoch(newStartMs.round()),
-      DateTime.fromMillisecondsSinceEpoch(newEndMs.round()),
+      rangeStart,
+      rangeEnd,
+      notifyVisibleRangeChanged: notifyRange,
     );
+    if (deferParentNotifications) {
+      vm.updateVisibleRange(
+        rangeStart.millisecondsSinceEpoch.toDouble(),
+        rangeEnd.millisecondsSinceEpoch.toDouble(),
+      );
+      final s = rangeStart;
+      final e = rangeEnd;
+      _schedulePostFrame(() => widget.onVisibleRangeChanged?.call(s, e));
+    }
   }
 
   /// Claims [PointerScrollEvent] via [PointerSignalResolver] so an ancestor
@@ -647,7 +729,15 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
     if (widget.horizontalZoomFactor != oldWidget.horizontalZoomFactor ||
         widget.horizontalZoomMin != oldWidget.horizontalZoomMin ||
         widget.horizontalZoomMax != oldWidget.horizontalZoomMax) {
-      _horizontalZoom = _clampZoom(widget.horizontalZoomFactor);
+      final next = _clampZoom(widget.horizontalZoomFactor);
+      final vm = _internalViewModel;
+      if (vm != null) {
+        // Keep Option-A zoom consistent: zoom factor changes must update the
+        // visible time window (not just the local zoom variable).
+        _applyHorizontalZoomGesture(vm, next, deferParentNotifications: true);
+      } else {
+        _horizontalZoom = next;
+      }
     }
 
     if (_internalViewModel != null) {
@@ -892,7 +982,20 @@ class _LegacyGanttChartWidgetState extends State<LegacyGanttChartWidget> {
           builder: (context, vm, child) {
             SchedulerBinding.instance.addPostFrameCallback((_) {
               if (!vm.isDisposed) {
-                vm.updateVisibleRange(gridMin ?? widget.gridMin, gridMax ?? widget.gridMax);
+                final double? incomingMin = gridMin ?? widget.gridMin;
+                final double? incomingMax = gridMax ?? widget.gridMax;
+                // Avoid clobbering in-chart navigation/zoom updates with stale props for one frame.
+                // When parent props catch up, min/max will differ and we'll apply the override.
+                if (incomingMin != null &&
+                    incomingMax != null &&
+                    vm.gridMin != null &&
+                    vm.gridMax != null &&
+                    incomingMin.round() == vm.gridMin!.round() &&
+                    incomingMax.round() == vm.gridMax!.round()) {
+                  // no-op
+                } else {
+                  vm.updateVisibleRange(incomingMin, incomingMax);
+                }
                 vm.updateFocusedTask(widget.focusedTaskId);
                 vm.updateResizeTooltipDateFormat(widget.resizeTooltipDateFormat);
                 vm.setTool(currentTool);

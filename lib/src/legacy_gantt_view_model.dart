@@ -2683,7 +2683,7 @@ class LegacyGanttViewModel extends ChangeNotifier {
   ///
   /// This mirrors the clamping/callback behavior of [_handleHorizontalScroll]
   /// but accepts absolute range endpoints instead of a pixel delta.
-  void setVisibleRange(DateTime start, DateTime end) {
+  void setVisibleRange(DateTime start, DateTime end, {bool notifyVisibleRangeChanged = true}) {
     if (isDisposed) return;
     if (end.isBefore(start)) {
       end = start;
@@ -2709,7 +2709,7 @@ class LegacyGanttViewModel extends ChangeNotifier {
     _calculateDomains();
     _calculateRowOffsets();
 
-    if (onVisibleRangeChanged != null && _visibleExtent.isNotEmpty) {
+    if (notifyVisibleRangeChanged && onVisibleRangeChanged != null && _visibleExtent.isNotEmpty) {
       onVisibleRangeChanged!(_visibleExtent.first, _visibleExtent.last);
     }
 

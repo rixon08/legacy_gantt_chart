@@ -148,13 +148,79 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
   }
 
   double _zoom = 1.0;
+  DateTime? _zoomBaselineStart;
+  DateTime? _zoomBaselineEnd;
+
+  String _fmtDay(DateTime d) => '${d.day.toString().padLeft(2, '0')}-${d.month.toString().padLeft(2, '0')}-${d.year}';
 
   @override
   Widget build(BuildContext context) {
     // 3. Create the widget
+    final baselineText = _zoomBaselineStart != null && _zoomBaselineEnd != null
+        ? 'Baseline (zoom=1 ref): ${_fmtDay(_zoomBaselineStart!)} … ${_fmtDay(_zoomBaselineEnd!)}'
+        : 'Baseline: (zoom in to capture; updates again after each reset to zoom 1)';
+    final visibleText = 'Visible: ${_fmtDay(_visibleStart)} … ${_fmtDay(_visibleEnd)}';
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Simple Gantt Chart')),
-      body: Row(
+      appBar: AppBar(
+        title: const Text('Simple Gantt Chart'),
+        actions: [
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text('Zoom: ${_zoom.toStringAsFixed(2)}x'),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Zoom out',
+            onPressed: () => setState(() {
+              _zoom = (_zoom / 1.2).clamp(1.0, 8.0);
+            }),
+            icon: const Icon(Icons.zoom_out),
+          ),
+          IconButton(
+            tooltip: 'Reset zoom',
+            onPressed: () {
+              
+              setState(() {
+                _zoom = 1.0;
+              });
+            },
+            icon: const Icon(Icons.refresh),
+          ),
+          IconButton(
+            tooltip: 'Zoom in',
+            onPressed: () => setState(() {
+              _zoom = (_zoom * 1.2).clamp(1.0, 8.0);
+            }),
+            icon: const Icon(Icons.zoom_in),
+          ),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Material(
+            color: Colors.blue.shade50,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(baselineText, style: const TextStyle(fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text(visibleText, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Test: pan at zoom 1 → zoom in → pan → reset zoom. Visible span should match baseline duration, centered on current view. Repeat pan+zoom to see baseline refresh.',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: Row(
         children: [
           SizedBox(
             width: _leftPaneWidth,
@@ -207,7 +273,7 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
               builder: (context, chartConstraints) {
                 // Important: do NOT wrap the chart in an additional horizontal
                 // SingleChildScrollView when using horizontalZoomFactor. The
-                // chart handles horizontal scrolling internally when zoom > 1.
+                // chart uses zoom to change the visible time window (Option A).
                 return LegacyGanttChartWidget(
                   scrollController: _verticalScrollController,
                   horizontalScrollController: _horizontalScrollController,
@@ -227,10 +293,18 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                   // false: kalau chart ditempatkan di dalam ScrollView vertikal dan
                   // parent harus mengambil wheel, set ke false dan pakai Ctrl/Cmd/Alt+scroll.
                   horizontalZoomOnVerticalWheel: true,
-                  onHorizontalZoomFactorChanged: (z) => setState(() {
-                    _zoom = z;
-                    // debugPrint('zoom: $_zoom');
-                  }),
+                  onHorizontalZoomFactorChanged: (z) {
+                    setState(() {
+                      _zoom = z;
+                      // debugPrint('zoom: $_zoom');
+                    });
+                  },
+                  onHorizontalZoomBaselineCaptured: (start, end) {
+                    setState(() {
+                      _zoomBaselineStart = start;
+                      _zoomBaselineEnd = end;
+                    });
+                  },
                   dependencies: deps,
                   data: tasks,
                   visibleRows: rows,
@@ -268,6 +342,9 @@ class _MinimalGanttChartState extends State<MinimalGanttChart> {
                   },
                 );
               },
+            ),
+          ),
+        ],
             ),
           ),
         ],
